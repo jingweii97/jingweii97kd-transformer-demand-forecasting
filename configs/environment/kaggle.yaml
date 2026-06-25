@@ -1,0 +1,15 @@
+# Kaggle Environment configurations
+
+input_dir: "/kaggle/input/m5-forecasting-accuracy"
+artifacts_dir: "/kaggle/working/artifacts"
+outputs_dir: "/kaggle/working/outputs"
+
+store_filter: ""  # Empty means full dataset (30,490 series)
+
+# PyTorch Lightning Trainer device configurations
+accelerator: "gpu"
+devices: 1
+num_workers: 2
+precision: 16
+
+seed: 42

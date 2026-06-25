@@ -1,0 +1,19 @@
+# Transformer Student model configurations
+
+d_model: 32
+nhead: 4
+layers: 2
+dim_feedforward: 64
+dropout: 0.1
+lr: 0.001
+epochs: 10
+batch_size: 64
+
+# Distillation parameters
+kd: true
+alpha: 0.5
+soft_targets_path: ""
+
+# Fast verification parameters
+limit_train_batches: null
+limit_val_batches: null

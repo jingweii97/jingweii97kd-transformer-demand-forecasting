@@ -1,0 +1,15 @@
+# Local Environment configurations
+
+input_dir: "input"
+artifacts_dir: "artifacts"
+outputs_dir: "outputs"
+
+store_filter: "CA_1"  # "CA_1" for Phase 1 verification, "" or null for full M5 Phase 2.
+
+# PyTorch Lightning Trainer device configurations
+accelerator: "cpu"
+devices: "auto"
+num_workers: 0
+precision: 32
+
+seed: 42

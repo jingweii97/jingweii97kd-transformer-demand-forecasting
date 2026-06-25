@@ -1,0 +1,48 @@
+# Dataset configurations for M5 demand forecasting
+
+target: "sales"
+group_ids: ["id"]
+lookback_window: 90       # L = 90 days
+prediction_window: 28     # H = 28 days
+
+# Chronological split definitions (1-based day indices)
+splits:
+  train:
+    start: 1
+    end: 1857
+  validation:
+    start: 1858
+    end: 1885
+  id_test:
+    start: 1886
+    end: 1913
+  ood_test:
+    start: 1914
+    end: 1941
+
+# Dataset columns/features
+features:
+  static_categoricals:
+    - "item_id"
+    - "dept_id"
+    - "cat_id"
+    - "store_id"
+    - "state_id"
+  time_varying_known_categoricals:
+    - "weekday"
+    - "month"
+    - "event_name_1"
+    - "event_type_1"
+  time_varying_known_reals:
+    - "snap_CA"
+    - "snap_TX"
+    - "snap_WI"
+    - "sell_price"
+    - "price_change_indicator"
+    - "percentage_price_change"
+  time_varying_unknown_reals:
+    - "sales"
+    - "lag_7"
+    - "lag_28"
+    - "rolling_mean_7"
+    - "rolling_std_7"

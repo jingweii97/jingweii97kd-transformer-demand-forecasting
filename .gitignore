@@ -1,0 +1,30 @@
+# Git ignore file for M5 demand forecasting research repository
+
+# Environments and caches
+.vscode/
+.idea/
+.ipynb_checkpoints/
+__pycache__/
+**/__pycache__/
+
+# Conda and env
+.conda/
+.gemini/
+
+# Datasets and heavy inputs
+input/calendar.csv
+input/sales_train_evaluation.csv
+input/sales_train_validation.csv
+input/sample_submission.csv
+input/sell_prices.csv
+input/*.pkl
+input/*.pt
+input/*.parquet
+
+# Reusable Pipeline Artifacts
+artifacts/
+
+# Experiment outputs and checkpoints
+outputs/
+lightning_logs/
+candidate_windows_metrics.csv

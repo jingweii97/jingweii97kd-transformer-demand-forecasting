@@ -1,0 +1,12 @@
+# Evaluation configurations
+
+metrics:
+  - "WRMSSE"
+  - "MAE"
+  - "RMSE"
+  - "WAPE"
+
+# Default paths for checkpoints (can be overridden via command line or environment configurations)
+teacher_checkpoint: ""
+student_nokd_checkpoint: ""
+student_kd_checkpoint: ""
