@@ -145,3 +145,41 @@ def save_config(cfg, filepath):
     d = cfg.to_dict()
     with open(filepath, 'w') as f:
         yaml.safe_dump(d, f, default_flow_style=False)
+
+def get_git_commit_hash():
+    import subprocess
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD'], stderr=subprocess.DEVNULL).decode('ascii').strip()
+    except Exception:
+        return "Unknown"
+
+def save_metadata(output_dir, seed, checkpoint_path=None, metrics=None, additional_fields=None):
+    """
+    Saves a metadata.json file to the specified directory for experiment traceability.
+    """
+    import json
+    import datetime
+    import torch
+    
+    os.makedirs(output_dir, exist_ok=True)
+    metadata = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": seed,
+        "git_commit": get_git_commit_hash(),
+        "device": {
+            "cuda_available": torch.cuda.is_available(),
+            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+        }
+    }
+    if checkpoint_path:
+        metadata["checkpoint_path"] = os.path.abspath(checkpoint_path)
+    if metrics:
+        metadata["metrics"] = metrics
+    if additional_fields:
+        metadata.update(additional_fields)
+        
+    metadata_path = os.path.join(output_dir, "metadata.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=4)
+    print(f"Saved experiment metadata to {metadata_path}")
+

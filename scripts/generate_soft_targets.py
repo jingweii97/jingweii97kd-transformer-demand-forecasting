@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--env", type=str, default="local", help="Environment configuration name")
     parser.add_argument("--checkpoint-path", type=str, required=True, help="Path to the trained TFT teacher checkpoint")
     parser.add_argument("--exp-name", type=str, default="exp_001", help="Experiment name")
+    parser.add_argument("--batch-size", type=int, default=256, help="Inference batch size")
     parser.add_argument("--max-day", type=int, default=None, 
                         help="Limit inference day range for fast verification (default: end of Validation)")
     args = parser.parse_args()
@@ -69,7 +70,7 @@ def main():
     )
 
     # 5. Create DataLoader
-    inference_loader = inference_ds.to_dataloader(train=False, batch_size=256, shuffle=False, num_workers=0)
+    inference_loader = inference_ds.to_dataloader(train=False, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # 6. Generate Point Forecasts (Median/0.5 Quantile predictions)
     print("Generating teacher forecasts over all sliding windows...")

@@ -46,3 +46,4 @@ features:
     - "lag_28"
     - "rolling_mean_7"
     - "rolling_std_7"
+    - "zero_sales_indicator"

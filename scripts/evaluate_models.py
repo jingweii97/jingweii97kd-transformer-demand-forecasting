@@ -9,7 +9,8 @@ from pytorch_forecasting import TemporalFusionTransformer
 # Add repository root to python path to allow importing packages
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.config import load_config, save_config
+import time
+from utils.config import load_config, save_config, save_metadata
 from utils.paths import resolve_path
 from utils.seed import set_seed
 from data.cache import load_from_cache
@@ -166,6 +167,40 @@ def compute_point_metrics(actuals, forecasts):
     
     return mae, rmse, wape
 
+def compute_mase_scales(df_train, train_end):
+    """
+    Precomputes the seasonal naive MAE denominator (in-sample absolute difference scale)
+    for each series.
+    """
+    print("Pre-computing scale factors for the MASE calculation...")
+    # Group by id and time_idx to get sales per series per day, ensuring correct order
+    df_sorted = df_train.sort_values(by=['id', 'time_idx']).reset_index(drop=True)
+    
+    # Calculate absolute differences lagged by 28 days per series
+    # Using pandas groupby shift to avoid boundary leakage between different ids
+    sales = df_sorted['sales'].values
+    prev_sales = df_sorted.groupby('id')['sales'].shift(28).values
+    
+    df_sorted['abs_diff'] = np.abs(sales - prev_sales)
+    
+    # Mean absolute difference for each series (ignoring NaNs from first 28 days)
+    scales = df_sorted.groupby('id', observed=True)['abs_diff'].mean()
+    
+    # Fill zero or NaN scales to avoid division by zero
+    scales = scales.fillna(1.0).replace(0.0, 1.0)
+    return scales.to_dict()
+
+def compute_mase(actuals_slice, forecasts_slice, scales_array):
+    """
+    Computes MASE for each series and returns the average MASE.
+    actuals_slice shape: (num_series, slice_len)
+    forecasts_slice shape: (num_series, slice_len)
+    scales_array shape: (num_series,)
+    """
+    mae_per_series = np.mean(np.abs(actuals_slice - forecasts_slice), axis=1)
+    mase_per_series = mae_per_series / scales_array
+    return np.mean(mase_per_series)
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate M5 Models on ID and OOD splits")
     parser.add_argument("--env", type=str, default="local", help="Environment configuration name")
@@ -241,10 +276,11 @@ def main():
     student_nokd = M5TransformerStudent.load_from_checkpoint(student_nokd_chk, training_dataset=training_data, strict=False)
     student_kd = M5TransformerStudent.load_from_checkpoint(student_kd_chk, training_dataset=training_data, strict=False)
 
-    # 5. Precompute WRMSSE weights and scales
+    # 5. Precompute WRMSSE weights and scales, and MASE scales
     train_end = cfg.dataset.splits.train.end
     df_train = df[df['time_idx'] <= train_end].copy()
     weights_dict, scales_dict = compute_wrmsse_weights_and_scales(df_train, train_end)
+    mase_scales_dict = compute_mase_scales(df_train, train_end)
 
     results = []
 
@@ -260,52 +296,92 @@ def main():
         df_test_gt = df_test_gt.sort_values(by=['id', 'time_idx']).reset_index(drop=True)
         
         actuals = df_test_gt['sales'].values.reshape(-1, 28)
+        num_series = actuals.shape[0]
+        
+        # Get series ids and map to precomputed MASE scales
+        series_ids = df_test_gt['id'].drop_duplicates().values
+        assert len(series_ids) == num_series, "Mismatch in series count and scales count."
+        scales_array = np.array([mase_scales_dict[sid] for sid in series_ids])
         
         # 5.1 Seasonal Naive Predictions
+        print("Generating forecasts from Seasonal Naive...")
+        start_t = time.perf_counter()
         df_naive_source = df[(df['time_idx'] >= (start_day - 28)) & (df['time_idx'] < start_day)].copy()
         df_naive_source = df_naive_source.sort_values(by=['id', 'time_idx']).reset_index(drop=True)
         naive_forecasts = df_naive_source['sales'].values.reshape(-1, 28)
+        naive_time = time.perf_counter() - start_t
         
         # 5.2 Model Predictions
         print("Generating forecasts from TFT Teacher...")
+        start_t = time.perf_counter()
         teacher_forecasts = get_predictions(teacher, loader)
+        teacher_time = time.perf_counter() - start_t
         
         print("Generating forecasts from Transformer Student (Without KD)...")
+        start_t = time.perf_counter()
         student_nokd_forecasts = get_predictions(student_nokd, loader)
+        student_nokd_time = time.perf_counter() - start_t
         
         print("Generating forecasts from Transformer Student (With KD)...")
+        start_t = time.perf_counter()
         student_kd_forecasts = get_predictions(student_kd, loader)
+        student_kd_time = time.perf_counter() - start_t
 
         # Shape integrity check
         assert actuals.shape == naive_forecasts.shape == teacher_forecasts.shape == student_nokd_forecasts.shape == student_kd_forecasts.shape
         
         # Evaluate each model
         models_eval = [
-            ("Seasonal Naive", naive_forecasts),
-            ("TFT Teacher", teacher_forecasts),
-            ("Student Without KD", student_nokd_forecasts),
-            ("Student With KD", student_kd_forecasts)
+            ("Seasonal Naive", naive_forecasts, naive_time),
+            ("TFT Teacher", teacher_forecasts, teacher_time),
+            ("Student Without KD", student_nokd_forecasts, student_nokd_time),
+            ("Student With KD", student_kd_forecasts, student_kd_time)
         ]
         
-        for name, forecasts in models_eval:
-            # 1. Point metrics
-            mae, rmse, wape = compute_point_metrics(actuals.flatten(), forecasts.flatten())
+        slices = [
+            ("Overall (1-28)", 0, 28),
+            ("Short (1-7)", 0, 7),
+            ("Medium (8-14)", 7, 14),
+            ("Long (15-28)", 14, 28)
+        ]
+        
+        for name, forecasts, inf_time in models_eval:
+            normalized_inf_time = (inf_time / num_series) * 1000.0  # normalized per 1,000 series
+            print(f"\n  Model: {name} (Total Inf: {inf_time:.3f}s, Per 1k: {normalized_inf_time:.3f}s)")
             
-            # 2. Hierarchical WRMSSE
-            df_preds = df_test_gt.copy()
-            df_preds['sales'] = forecasts.flatten()
-            wrmsse, _ = compute_hierarchical_wrmsse(df_test_gt, df_preds, weights_dict, scales_dict)
-            
-            print(f"  {name:25s} -> WRMSSE: {wrmsse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | WAPE: {wape:.4f}")
-            
-            results.append({
-                "Window": test_name,
-                "Model": name,
-                "WRMSSE": wrmsse,
-                "MAE": mae,
-                "RMSE": rmse,
-                "WAPE": wape
-            })
+            for slice_name, start_idx, end_idx in slices:
+                # Slice actuals and forecasts
+                actuals_slice = actuals[:, start_idx:end_idx]
+                forecasts_slice = forecasts[:, start_idx:end_idx]
+                
+                # Sliced days indices relative to start_day
+                slice_start_day = start_day + start_idx
+                slice_end_day = start_day + end_idx - 1
+                
+                # Slice DataFrames for WRMSSE
+                df_test_gt_slice = df_test_gt[(df_test_gt['time_idx'] >= slice_start_day) & (df_test_gt['time_idx'] <= slice_end_day)].copy()
+                df_preds_slice = df_test_gt_slice.copy()
+                df_preds_slice['sales'] = forecasts_slice.flatten()
+                
+                # Compute metrics
+                mae, rmse, wape = compute_point_metrics(actuals_slice.flatten(), forecasts_slice.flatten())
+                wrmsse, _ = compute_hierarchical_wrmsse(df_test_gt_slice, df_preds_slice, weights_dict, scales_dict)
+                mase = compute_mase(actuals_slice, forecasts_slice, scales_array)
+                
+                print(f"    {slice_name:15s} -> WRMSSE: {wrmsse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | MASE: {mase:.4f} | WAPE: {wape:.4f}")
+                
+                results.append({
+                    "Window": test_name,
+                    "Model": name,
+                    "Horizon": slice_name,
+                    "WRMSSE": float(wrmsse),
+                    "MAE": float(mae),
+                    "RMSE": float(rmse),
+                    "MASE": float(mase),
+                    "WAPE": float(wape),
+                    "Inference_Time_Sec": float(inf_time),
+                    "Inference_Time_Per_1k_Sec": float(normalized_inf_time)
+                })
             
     # 6. Save results
     eval_exp_dir = os.path.join(outputs_dir, "evaluation", args.exp_name)
@@ -314,7 +390,7 @@ def main():
     # Save the fully merged configuration into experiment folder for complete reproducibility
     config_save_path = os.path.join(eval_exp_dir, "config.yaml")
     save_config(cfg, config_save_path)
-    print(f"Merged config saved to {config_save_path}")
+    print(f"\nMerged config saved to {config_save_path}")
 
     # Save metrics csv
     suffix = f"_{cfg.environment.store_filter}" if cfg.environment.store_filter else "_full"
@@ -323,13 +399,40 @@ def main():
     
     df_res = pd.DataFrame(results)
     df_res.to_csv(csv_filepath, index=False)
-    print(f"\nSaved evaluation metrics to: {csv_filepath}")
+    print(f"Saved evaluation metrics to: {csv_filepath}")
+
+    # Save metadata JSON file for traceability
+    models = ["Seasonal Naive", "TFT Teacher", "Student Without KD", "Student With KD"]
+    summary_metrics = {}
+    for m in models:
+        summary_metrics[m] = {}
+        for w in ["ID Test", "OOD Test"]:
+            df_m_w = df_res[(df_res["Model"] == m) & (df_res["Window"] == w) & (df_res["Horizon"] == "Overall (1-28)")]
+            summary_metrics[m][w] = {
+                "WRMSSE": float(df_m_w["WRMSSE"].values[0]),
+                "MASE": float(df_m_w["MASE"].values[0]),
+                "MAE": float(df_m_w["MAE"].values[0]),
+                "Inference_Time_Sec": float(df_m_w["Inference_Time_Sec"].values[0]),
+                "Inference_Time_Per_1k_Sec": float(df_m_w["Inference_Time_Per_1k_Sec"].values[0])
+            }
+            
+    save_metadata(
+        eval_exp_dir,
+        cfg.environment.seed,
+        additional_fields={
+            "checkpoints": {
+                "teacher": teacher_chk,
+                "student_nokd": student_nokd_chk,
+                "student_kd": student_kd_chk
+            },
+            "metrics_summary": summary_metrics
+        }
+    )
 
     # 7. Print Relative Degradation
-    print("\n--- Relative ID-to-OOD Performance Degradation ---")
-    models = ["Seasonal Naive", "TFT Teacher", "Student Without KD", "Student With KD"]
+    print("\n--- Relative ID-to-OOD Performance Degradation (Overall 1-28 Horizon) ---")
     for m in models:
-        df_m = df_res[df_res["Model"] == m]
+        df_m = df_res[(df_res["Model"] == m) & (df_res["Horizon"] == "Overall (1-28)")]
         id_err = df_m[df_m["Window"] == "ID Test"]["WRMSSE"].values[0]
         ood_err = df_m[df_m["Window"] == "OOD Test"]["WRMSSE"].values[0]
         

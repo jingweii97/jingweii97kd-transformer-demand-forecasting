@@ -8,7 +8,7 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 # Add repository root to python path to allow importing packages
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.config import load_config, save_config
+from utils.config import load_config, save_config, save_metadata
 from utils.paths import resolve_path
 from utils.seed import set_seed
 from utils.logging import get_csv_logger
@@ -161,7 +161,19 @@ def main():
     print("Starting training loop...")
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     
-    print(f"Training completed. Best model checkpoint saved to: {checkpoint_callback.best_model_path}")
+    best_path = checkpoint_callback.best_model_path
+    print(f"Training completed. Best model checkpoint saved to: {best_path}")
+    
+    # Save experiment metadata
+    save_metadata(
+        exp_dir, 
+        cfg.environment.seed, 
+        checkpoint_path=best_path,
+        additional_fields={
+            "kd_enabled": kd_enabled,
+            "alpha": float(alpha)
+        }
+    )
 
 if __name__ == "__main__":
     main()
