@@ -89,5 +89,11 @@ def preprocess_m5_data(input_dir, store_filter="CA_1"):
     for col in int_cols:
         df_long[col] = df_long[col].astype(np.int32)
         
+    print("Dropping high-memory columns date, d, and wm_yr_wk...")
+    df_long = df_long.drop(
+        columns=["date", "d", "wm_yr_wk"],
+        errors="ignore"
+    )
+        
     print("Preprocessing completed successfully.")
     return df_long

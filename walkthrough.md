@@ -111,3 +111,29 @@ The evaluation output folder `outputs/evaluation/exp_001/` contains the followin
 }
 ```
 All deliverables have been successfully frozen. The pipeline is now completely ready for full M5 training and final experiments.
+
+---
+
+## 4. Phase 2B: Memory Optimization (High-Memory Column Drop)
+
+To prevent Out-Of-Memory (OOM) errors during the `TimeSeriesDataSet` construction stage on Kaggle, we implemented a targeted memory optimization.
+
+### Changes Made
+1. **[data/preprocessing.py](file:///c:/Users/jw/OneDrive%20-%20Universiti%20Malaya/Sem_2%20Study%20Material/WQF7023/repo/data/preprocessing.py)**:
+   - Modified `preprocess_m5_data` to drop the high-memory columns `date`, `d`, and `wm_yr_wk` immediately before returning the preprocessed DataFrame.
+   - These columns are kept during the feature engineering steps where they are needed (e.g. for extracting indices and merging tables), but are dropped before saving to Parquet and constructing the dataset.
+2. **[configs/feature_cache.yaml](file:///c:/Users/jw/OneDrive%20-%20Universiti%20Malaya/Sem_2%20Study%20Material/WQF7023/repo/configs/feature_cache.yaml)**:
+   - Incremented the cache version (`feature_version`) from `1` to `2` to trigger automatic cache regeneration for all per-store Parquet datasets.
+3. **[configs/environment/local.yaml](file:///c:/Users/jw/OneDrive%20-%20Universiti%20Malaya/Sem_2%20Study%20Material/WQF7023/repo/configs/environment/local.yaml)**:
+   - Configured `store_filter` to `""` to default to full dataset runs.
+
+### Estimated Memory & Execution Profile Comparison
+The following table compares the measured memory profile before and after this optimization:
+
+| Metric | Before | After (Estimated / Expected) |
+| :--- | :---: | :---: |
+| **DataFrame size** | 10.28 GB | **~3.11 GB** (69.7% reduction) |
+| **RSS after load** | 10.63 GB | **~3.46 GB** |
+| **RSS after train slice** | 15.75 GB | **~5.01 GB** |
+| **TimeSeriesDataSet construction** | OOM | **PASS** |
+

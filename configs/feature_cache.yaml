@@ -5,4 +5,4 @@
 # prepare_dataset.py will automatically reprocess any store whose cached
 # Parquet file has a mismatched or missing version marker.
 
-feature_version: 1
+feature_version: 2
