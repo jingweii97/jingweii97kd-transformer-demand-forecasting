@@ -12,7 +12,7 @@ from utils.config import load_config, save_config, save_metadata
 from utils.paths import resolve_path
 from utils.seed import set_seed
 from utils.logging import get_csv_logger
-from data.cache import load_from_cache
+from data.cache import load_from_cache, load_all_from_cache
 from data.dataset import build_timeseries_dataset
 from models.student import M5TransformerStudent
 
@@ -50,13 +50,18 @@ def main():
     limit_val_batches = args.limit_val_batches if args.limit_val_batches is not None else cfg.student.limit_val_batches
 
     # 2. Load Preprocessed Data
-    df = load_from_cache(
-        artifacts_dir=cfg.environment.artifacts_dir,
-        store_filter=cfg.environment.store_filter
-    )
+    # Single store (local dev / Phase-1): use store_filter directly.
+    # Full dataset (Phase-2, store_filter empty): concatenate all per-store Parquet files.
+    if cfg.environment.store_filter:
+        df = load_from_cache(
+            artifacts_dir=cfg.environment.artifacts_dir,
+            store_filter=cfg.environment.store_filter
+        )
+    else:
+        df = load_all_from_cache(artifacts_dir=cfg.environment.artifacts_dir)
     if df is None:
         raise FileNotFoundError(
-            f"Preprocessed cache not found for store filter: {cfg.environment.store_filter}. "
+            f"Preprocessed cache not found for store filter: '{cfg.environment.store_filter}'. "
             "Please run prepare_dataset.py first."
         )
 

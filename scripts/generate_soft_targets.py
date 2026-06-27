@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.config import load_config
 from utils.paths import resolve_path
 from utils.seed import set_seed
-from data.cache import load_from_cache
+from data.cache import load_from_cache, load_all_from_cache
 from data.dataset import build_timeseries_dataset
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
@@ -37,13 +37,18 @@ def main():
     output_file = os.path.join(output_dir, f"{args.exp_name}.pt")
 
     # 1. Load Preprocessed Data
-    df = load_from_cache(
-        artifacts_dir=cfg.environment.artifacts_dir,
-        store_filter=cfg.environment.store_filter
-    )
+    # Single store (local dev / Phase-1): use store_filter directly.
+    # Full dataset (Phase-2, store_filter empty): concatenate all per-store Parquet files.
+    if cfg.environment.store_filter:
+        df = load_from_cache(
+            artifacts_dir=cfg.environment.artifacts_dir,
+            store_filter=cfg.environment.store_filter
+        )
+    else:
+        df = load_all_from_cache(artifacts_dir=cfg.environment.artifacts_dir)
     if df is None:
         raise FileNotFoundError(
-            f"Preprocessed cache not found for store filter: {cfg.environment.store_filter}. "
+            f"Preprocessed cache not found for store filter: '{cfg.environment.store_filter}'. "
             "Please run prepare_dataset.py first."
         )
 
