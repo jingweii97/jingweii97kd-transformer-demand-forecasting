@@ -1,8 +1,8 @@
 # Kaggle Environment configurations
 
-input_dir: "/kaggle/input/m5-forecasting-accuracy"
-artifacts_dir: "/kaggle/working/artifacts"
-outputs_dir: "/kaggle/working/outputs"
+input_dir: "/kaggle/input/competitions/m5-forecasting-accuracy"
+artifacts_dir: "artifacts"
+outputs_dir: "outputs"
 
 store_filter: ""  # Empty means full dataset (30,490 series)
 
