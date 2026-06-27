@@ -134,7 +134,7 @@ class StoreMetadataBuilder:
         self.target_normalizer = None
         self.base_dataset = None
 
-    def fit(self):
+    def fit(self, parquet_dir):
         print("Fitting global categorical encoders from complete known domains...")
         # 1. Fit categorical encoders globally
         input_dir_abs = resolve_path(self.cfg.environment.input_dir)
@@ -182,13 +182,11 @@ class StoreMetadataBuilder:
         target_col = self.cfg.dataset.target
         train_end = self.cfg.dataset.splits.train.end
         
-        from utils.paths import get_dataset_dir
-        artifacts_dir = get_dataset_dir(self.cfg)
-        cache_dir = os.path.join(artifacts_dir, "data")
+        cache_dir = resolve_path(parquet_dir)
         files = sorted(glob.glob(os.path.join(cache_dir, "preprocessed_*.parquet")))
         if not files:
             raise FileNotFoundError(
-                "No cached Parquet files found. Please run prepare_dataset.py first."
+                f"No cached Parquet files found at: '{cache_dir}'"
             )
             
         norm_columns = [target_col] + group_cols + ['time_idx']

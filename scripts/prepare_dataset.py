@@ -49,7 +49,8 @@ def main():
     from utils.paths import resolve_path
     
     builder = StoreMetadataBuilder(cfg)
-    builder.fit()
+    parquet_dir = os.path.join(cfg.environment.artifacts_dir, "data")
+    builder.fit(parquet_dir=parquet_dir)
     
     # Save the global metadata builder to artifacts_dir
     write_dir = resolve_path(os.path.join(cfg.environment.artifacts_dir, "metadata"))
