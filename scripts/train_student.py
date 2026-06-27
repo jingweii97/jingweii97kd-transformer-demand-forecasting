@@ -33,10 +33,18 @@ def main():
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--limit-train-batches", type=float, default=None, help="Limit train batches per epoch")
     parser.add_argument("--limit-val-batches", type=float, default=None, help="Limit validation batches per epoch")
+    parser.add_argument("--max-stores", type=int, default=None, help="Limit maximum number of store partitions to stream")
+    parser.add_argument("--max-batches-per-store", type=int, default=None, help="Limit maximum batches per store partition")
     args = parser.parse_args()
 
     # 1. Load Configurations
     cfg = load_config(env_name=args.env)
+    
+    # Apply debug flags directly to config environment settings
+    if args.max_stores is not None:
+        cfg.environment.max_stores = args.max_stores
+    if args.max_batches_per_store is not None:
+        cfg.environment.max_batches_per_store = args.max_batches_per_store
     
     # Set seed
     set_seed(cfg.environment.seed)
