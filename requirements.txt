@@ -1,0 +1,15 @@
+# Core Data Libraries
+numpy>=1.22.4
+pandas>=2.0.0
+pyarrow>=10.0.0
+pyyaml>=6.0.0
+
+# Analysis & Plotting
+scipy>=1.8.0
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Deep Learning & Modeling
+torch>=2.0.0
+lightning>=2.0.0
+pytorch-forecasting>=1.0.0
