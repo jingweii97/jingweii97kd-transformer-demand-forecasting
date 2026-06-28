@@ -13,5 +13,5 @@ def create_tft_teacher(training_dataset, cfg):
         dropout=cfg.teacher.dropout,
         loss=QuantileLoss(),
         reduce_on_plateau_patience=cfg.teacher.patience,
-        mask_bias=float("-inf")
+        mask_bias=-1e4
     )
