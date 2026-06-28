@@ -96,7 +96,7 @@ def main():
     for store in stores:
         print(f"Generating forecasts for store: {store}")
         df_part = load_from_cache(
-            artifacts_dir=cfg.environment.artifacts_dir,
+            artifacts_dir=ds_dir,
             store_filter=store
         )
         if df_part is None:
