@@ -1,0 +1,10 @@
+{
+    "timestamp": "2026-06-28T10:11:32.236804Z",
+    "seed": 42,
+    "git_commit": "4ee97f5374e653324a6cbbba2645eb35d030d580",
+    "device": {
+        "cuda_available": true,
+        "device_name": "Tesla T4"
+    },
+    "checkpoint_path": "/kaggle/working/outputs/teacher/prelim/best_tft_teacher.ckpt"
+}

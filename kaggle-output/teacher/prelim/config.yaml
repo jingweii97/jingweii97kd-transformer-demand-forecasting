@@ -1,0 +1,93 @@
+dataset:
+  features:
+    static_categoricals:
+    - item_id
+    - dept_id
+    - cat_id
+    - store_id
+    - state_id
+    time_varying_known_categoricals:
+    - weekday
+    - month
+    - event_name_1
+    - event_type_1
+    time_varying_known_reals:
+    - snap_CA
+    - snap_TX
+    - snap_WI
+    - sell_price
+    - price_change_indicator
+    - percentage_price_change
+    time_varying_unknown_reals:
+    - sales
+    - lag_7
+    - lag_28
+    - rolling_mean_7
+    - rolling_std_7
+    - zero_sales_indicator
+  group_ids:
+  - id
+  lookback_window: 90
+  prediction_window: 28
+  splits:
+    id_test:
+      end: 1913
+      start: 1886
+    ood_test:
+      end: 1941
+      start: 1914
+    train:
+      end: 1857
+      start: 1
+    validation:
+      end: 1885
+      start: 1858
+  target: sales
+  window_stride: 7
+environment:
+  accelerator: gpu
+  artifacts_dir: /kaggle/working/artifacts
+  dataset_artifacts_dir: /kaggle/input/datasets/jingweii97/kd-transformer-demand-forecasting-dataset/artifacts
+  devices: 1
+  experiment_artifacts_dir: /kaggle/input/datasets/jingweii97/kd-transformer-demand-forecasting-experiments/artifacts
+  gradient_clip_val: 0.1
+  input_dir: /kaggle/input/competitions/m5-forecasting-accuracy
+  num_workers: 4
+  outputs_dir: /kaggle/working/outputs
+  precision: '32'
+  seed: 42
+  store_filter: TX
+evaluation:
+  metrics:
+  - WRMSSE
+  - MAE
+  - RMSE
+  - WAPE
+  student_kd_checkpoint: ''
+  student_nokd_checkpoint: ''
+  teacher_checkpoint: ''
+student:
+  alpha: 0.5
+  batch_size: 64
+  d_model: 32
+  dim_feedforward: 64
+  dropout: 0.1
+  epochs: 2
+  kd: true
+  layers: 2
+  limit_train_batches: null
+  limit_val_batches: null
+  lr: 0.001
+  nhead: 4
+  patience: 1
+  soft_targets_path: ''
+teacher:
+  attention_heads: 4
+  batch_size: 256
+  dropout: 0.1
+  epochs: 2
+  hidden_size: 32
+  limit_train_batches: null
+  limit_val_batches: null
+  lr: 0.001
+  patience: 1

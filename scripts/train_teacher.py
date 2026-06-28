@@ -14,6 +14,31 @@ from utils.logging import get_csv_logger
 from data.cache import load_dataset_from_cache
 from data.dataset import build_timeseries_dataset
 from models.teacher import create_tft_teacher
+import torch
+
+class EpochMetricsLoggingCallback(pl.Callback):
+    """
+    Minimal PyTorch Lightning callback to print epoch-level metrics to stdout.
+    Required because PL does not print metrics when the progress bar is disabled.
+    """
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+            
+        epoch = trainer.current_epoch + 1
+        max_epochs = trainer.max_epochs
+        metrics = trainer.callback_metrics
+        
+        # Format and log epoch-level metrics
+        formatted = []
+        for k, v in sorted(metrics.items()):
+            if k.endswith("_step"):
+                continue
+            val = v.item() if isinstance(v, torch.Tensor) else v
+            formatted.append(f"{k}: {val:.4f}")
+            
+        if formatted:
+            print(f"Epoch {epoch}/{max_epochs} completed | " + " | ".join(formatted))
 
 def main():
     parser = argparse.ArgumentParser(description="Train TFT Teacher Model on M5 Dataset")
@@ -117,6 +142,12 @@ def main():
         mode="min"
     )
 
+    enable_progress_bar = True
+    callbacks = [early_stop_callback, checkpoint_callback]
+    if args.env == "kaggle":
+        enable_progress_bar = False
+        callbacks.append(EpochMetricsLoggingCallback())
+
     # 7. Set up Trainer
     gradient_clip_val = getattr(cfg.environment, "gradient_clip_val", 0.1)
     trainer = pl.Trainer(
@@ -125,11 +156,12 @@ def main():
         devices=cfg.environment.devices,
         precision=cfg.environment.precision,
         gradient_clip_val=gradient_clip_val,
-        callbacks=[early_stop_callback, checkpoint_callback],
+        callbacks=callbacks,
         logger=logger,
         limit_train_batches=limit_train_batches,
         limit_val_batches=limit_val_batches,
-        enable_model_summary=True
+        enable_model_summary=True,
+        enable_progress_bar=enable_progress_bar
     )
 
     # 8. Train the model
