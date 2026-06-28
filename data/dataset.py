@@ -9,9 +9,10 @@ import pandas as pd
 import numpy as np
 from utils.paths import resolve_path
 from data.cache import load_from_cache, STORES, resolve_stores
+import torch
 
 class StorePartitionedDataset(IterableDataset):
-    def __init__(self, base_dataset, cfg, batch_size, is_train=True, max_idx=None, predict=True, shuffle=True, partition_manager=None):
+    def __init__(self, base_dataset, cfg, batch_size, is_train=True, max_idx=None, predict=True, shuffle=True, partition_manager=None, exp_name=None):
         super().__init__()
         self.base_dataset = base_dataset
         self.cfg = cfg
@@ -21,6 +22,7 @@ class StorePartitionedDataset(IterableDataset):
         self.predict = predict
         self.shuffle = shuffle
         self.partition_manager = partition_manager
+        self.exp_name = exp_name
         
         # Determine the stores to load
         self.stores = resolve_stores(cfg.environment.store_filter)
@@ -60,6 +62,38 @@ class StorePartitionedDataset(IterableDataset):
             )
             if df_part is None:
                 raise FileNotFoundError(f"Cache not found for store: {store}")
+
+            # Load soft targets if running KD during training
+            store_soft_targets = None
+            global_to_local = None
+            if self.is_train and getattr(self.cfg.student, "kd", False) and self.exp_name is not None:
+                # Resolve soft targets path for the current store
+                exp_dir = getattr(self.cfg.environment, "experiment_artifacts_dir", None)
+                if exp_dir is not None:
+                    from utils.paths import get_experiment_dir
+                    exp_art_dir = get_experiment_dir(self.cfg)
+                    path1 = os.path.join(exp_art_dir, "soft_targets", f"{self.exp_name}_{store}.pt")
+                    path2 = os.path.join(exp_art_dir, "outputs", "soft_targets", f"{self.exp_name}_{store}.pt")
+                    if os.path.exists(path1):
+                        st_path = path1
+                    else:
+                        st_path = path2
+                else:
+                    artifacts_dir = resolve_path(self.cfg.environment.artifacts_dir)
+                    st_path = os.path.join(artifacts_dir, "soft_targets", f"{self.exp_name}_{store}.pt")
+                
+                print(f"Loading pre-computed teacher forecasts for store {store} from: {st_path}")
+                if os.path.exists(st_path):
+                    st_data = torch.load(st_path, map_location="cpu")
+                    unique_groups = st_data["unique_groups"]
+                    store_soft_targets = st_data["tensor"]
+                    
+                    # Create global to local mapping mapping global group_id to store-local index
+                    num_total_series = len(self.base_dataset._categorical_encoders['id'].classes_)
+                    global_to_local = torch.full((num_total_series,), -1, dtype=torch.long)
+                    global_to_local[torch.tensor(unique_groups, dtype=torch.long)] = torch.arange(len(unique_groups))
+                else:
+                    raise FileNotFoundError(f"Soft targets file not found at {st_path}")
                 
             if self.is_train:
                 df_part_sliced = df_part[df_part['time_idx'] <= train_end].copy()
@@ -121,7 +155,16 @@ class StorePartitionedDataset(IterableDataset):
             # Yield batches directly
             batch_count = 0
             for batch in part_loader:
-                yield batch
+                x, y = batch
+                if store_soft_targets is not None:
+                    group_ids = x['groups'][:, 0].long()
+                    start_times = x['decoder_time_idx'][:, 0].long()
+                    
+                    local_group_ids = global_to_local[group_ids]
+                    teacher_preds = store_soft_targets[local_group_ids, start_times]
+                    x['soft_targets'] = teacher_preds
+                
+                yield x, y
                 batch_count += 1
                 if max_batches_per_store is not None and batch_count >= max_batches_per_store:
                     print(f"Debug Mode: reached max batches per store limit ({max_batches_per_store})")
@@ -130,6 +173,9 @@ class StorePartitionedDataset(IterableDataset):
             # Memory cleanup after each partition
             del part_loader
             del part_ds
+            if store_soft_targets is not None:
+                del store_soft_targets
+                del global_to_local
             gc.collect()
             
         # Concatenate and save decoded index in partition manager
@@ -248,9 +294,10 @@ class StoreMetadataBuilder:
         )
 
 class StorePartitionManager:
-    def __init__(self, base_dataset, cfg):
+    def __init__(self, base_dataset, cfg, exp_name=None):
         self.base_dataset = base_dataset
         self.cfg = cfg
+        self.exp_name = exp_name
         self._decoded_index = None
 
     def train_dataloader(self, batch_size):
@@ -260,7 +307,8 @@ class StorePartitionManager:
             batch_size=batch_size,
             is_train=True,
             shuffle=True,
-            partition_manager=self
+            partition_manager=self,
+            exp_name=self.exp_name
         )
         return DataLoader(dataset_iter, batch_size=None, num_workers=0)
 
@@ -273,7 +321,8 @@ class StorePartitionManager:
             max_idx=max_idx,
             predict=True,
             shuffle=False,
-            partition_manager=self
+            partition_manager=self,
+            exp_name=self.exp_name
         )
         return DataLoader(dataset_iter, batch_size=None, num_workers=0)
 
@@ -286,7 +335,8 @@ class StorePartitionManager:
             max_idx=max_idx,
             predict=predict,
             shuffle=False,
-            partition_manager=self
+            partition_manager=self,
+            exp_name=self.exp_name
         )
         return DataLoader(dataset_iter, batch_size=None, num_workers=0)
 

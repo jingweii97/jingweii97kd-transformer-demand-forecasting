@@ -110,7 +110,7 @@ def main():
     training_data = build_timeseries_dataset(df, cfg, is_train=True)
     
     from data.dataset import StorePartitionManager
-    partition_manager = StorePartitionManager(training_data, cfg)
+    partition_manager = StorePartitionManager(training_data, cfg, exp_name=args.exp_name)
 
     # 4. Create DataLoaders via Partition Manager
     train_loader = partition_manager.train_dataloader(batch_size=batch_size)
@@ -123,52 +123,78 @@ def main():
     soft_targets = None
     if kd_enabled:
         soft_targets_path = args.soft_targets_path
+        
+        # Check if per-store target files exist instead of a single global file
+        use_per_store_targets = False
         if not soft_targets_path:
+            # Look for a representative per-store file (e.g. TX_1) to determine if per-store partitions are used
+            from data.cache import STORES
             exp_dir = getattr(cfg.environment, "experiment_artifacts_dir", None)
             if exp_dir is not None:
                 from utils.paths import get_experiment_dir
                 exp_art_dir = get_experiment_dir(cfg)
-                path1 = os.path.join(exp_art_dir, "soft_targets", f"{args.exp_name}.pt")
-                path2 = os.path.join(exp_art_dir, "outputs", "soft_targets", f"{args.exp_name}.pt")
-                if os.path.exists(path1):
-                    soft_targets_path = path1
-                elif os.path.exists(path2):
-                    soft_targets_path = path2
-                else:
-                    raise FileNotFoundError(
-                        f"Soft targets file for '{args.exp_name}' not found under configured experiment_artifacts_dir at '{exp_art_dir}'"
-                    )
+                check_dirs = [os.path.join(exp_art_dir, "soft_targets"), os.path.join(exp_art_dir, "outputs", "soft_targets")]
             else:
                 artifacts_dir = resolve_path(cfg.environment.artifacts_dir)
-                soft_targets_path = os.path.join(artifacts_dir, "soft_targets", f"{args.exp_name}.pt")
+                check_dirs = [os.path.join(artifacts_dir, "soft_targets")]
             
-        soft_targets_path_abs = resolve_path(soft_targets_path)
-        print(f"Loading pre-computed teacher forecasts from: {soft_targets_path_abs}")
-        if not os.path.exists(soft_targets_path_abs):
-            raise FileNotFoundError(
-                f"Soft targets file not found at {soft_targets_path_abs}. "
-                "Run generate_soft_targets.py first."
-            )
+            for store in STORES:
+                for d in check_dirs:
+                    p = os.path.join(d, f"{args.exp_name}_{store}.pt")
+                    if os.path.exists(p):
+                        use_per_store_targets = True
+                        break
+                if use_per_store_targets:
+                    break
         
-        soft_targets = torch.load(soft_targets_path_abs)
-        print(f"Loaded soft targets tensor of shape: {soft_targets.shape}")
-
-        # A-3: Validate tensor dimensions against the fitted dataset and config.
-        # Catches scope mismatches (e.g. single-store .pt loaded for a full run)
-        # before training starts rather than silently producing wrong gradients.
-        expected_groups = len(training_data._categorical_encoders['id'].classes_)
-        if soft_targets.shape[0] != expected_groups:
-            raise RuntimeError(
-                f"Soft targets group dimension ({soft_targets.shape[0]}) does not "
-                f"match the expected number of series ({expected_groups}). "
-                "The file may have been generated for a different dataset scope "
-                "(e.g. single-store vs full dataset). Re-run generate_soft_targets.py."
-            )
-        if soft_targets.shape[2] != cfg.dataset.prediction_window:
-            raise RuntimeError(
-                f"Soft targets horizon dimension ({soft_targets.shape[2]}) does not "
-                f"match the configured prediction_window ({cfg.dataset.prediction_window})."
-            )
+        if use_per_store_targets:
+            print(f"Per-store soft targets detected for experiment '{args.exp_name}'. Dataloader will stream them partition-by-partition.")
+        else:
+            # Fallback/Default path for loading legacy global soft targets tensor
+            if not soft_targets_path:
+                exp_dir = getattr(cfg.environment, "experiment_artifacts_dir", None)
+                if exp_dir is not None:
+                    from utils.paths import get_experiment_dir
+                    exp_art_dir = get_experiment_dir(cfg)
+                    path1 = os.path.join(exp_art_dir, "soft_targets", f"{args.exp_name}.pt")
+                    path2 = os.path.join(exp_art_dir, "outputs", "soft_targets", f"{args.exp_name}.pt")
+                    if os.path.exists(path1):
+                        soft_targets_path = path1
+                    elif os.path.exists(path2):
+                        soft_targets_path = path2
+                    else:
+                        raise FileNotFoundError(
+                            f"Soft targets file for '{args.exp_name}' not found under configured experiment_artifacts_dir at '{exp_art_dir}'"
+                        )
+                else:
+                    artifacts_dir = resolve_path(cfg.environment.artifacts_dir)
+                    soft_targets_path = os.path.join(artifacts_dir, "soft_targets", f"{args.exp_name}.pt")
+            
+            soft_targets_path_abs = resolve_path(soft_targets_path)
+            print(f"Loading legacy global teacher forecasts from: {soft_targets_path_abs}")
+            if not os.path.exists(soft_targets_path_abs):
+                raise FileNotFoundError(
+                    f"Soft targets file not found at {soft_targets_path_abs}. "
+                    "Run generate_soft_targets.py first."
+                )
+            
+            soft_targets = torch.load(soft_targets_path_abs)
+            print(f"Loaded soft targets tensor of shape: {soft_targets.shape}")
+    
+            # A-3: Validate tensor dimensions against the fitted dataset and config.
+            expected_groups = len(training_data._categorical_encoders['id'].classes_)
+            if soft_targets.shape[0] != expected_groups:
+                raise RuntimeError(
+                    f"Soft targets group dimension ({soft_targets.shape[0]}) does not "
+                    f"match the expected number of series ({expected_groups}). "
+                    "The file may have been generated for a different dataset scope. "
+                    "Re-run generate_soft_targets.py."
+                )
+            if soft_targets.shape[2] != cfg.dataset.prediction_window:
+                raise RuntimeError(
+                    f"Soft targets horizon dimension ({soft_targets.shape[2]}) does not "
+                    f"match the configured prediction_window ({cfg.dataset.prediction_window})."
+                )
 
     # 6. Instantiate Student Model
     print("Instantiating Compact Transformer Student model...")

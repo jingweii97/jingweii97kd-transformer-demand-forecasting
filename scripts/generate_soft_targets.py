@@ -40,13 +40,15 @@ def main():
     set_seed(cfg.environment.seed)
 
     # Determine default max day for soft target generation
-    max_day = args.max_day if args.max_day is not None else cfg.dataset.splits.validation.end
+    train_end = cfg.dataset.splits.train.end
+    prediction_window = cfg.dataset.prediction_window
+    max_prediction_start = train_end - prediction_window + 1
+    max_day = args.max_day if args.max_day is not None else max_prediction_start
 
     # Define output file path under artifacts/soft_targets/
     artifacts_dir = resolve_path(cfg.environment.artifacts_dir)
     output_dir = os.path.join(artifacts_dir, "soft_targets")
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"{args.exp_name}.pt")
 
     # 1. Load Preprocessed Data
     from utils.paths import get_dataset_dir
@@ -89,10 +91,8 @@ def main():
     max_prediction_length = cfg.dataset.prediction_window
     min_idx = 1
     
-    all_preds = []
-    all_group_names = []
-    all_start_times = []
-    
+    forecast_horizon = cfg.dataset.prediction_window
+
     for store in stores:
         print(f"Generating forecasts for store: {store}")
         df_part = load_from_cache(
@@ -153,60 +153,57 @@ def main():
         else:
             part_decoded = part_ds.decoded_index
             
-        # Collect predictions and index details
-        all_preds.append(part_preds.cpu())
-        all_group_names.extend(part_decoded['id'].values)
-        all_start_times.extend(part_decoded['time_idx_first_prediction'].values)
+        group_names = part_decoded['id'].values
+        start_times = part_decoded['time_idx_first_prediction'].values
         
-        # Memory cleanup
+        # Map global group names to codes
+        group_encoder = training_data._categorical_encoders['id']
+        group_codes = group_encoder.transform(group_names)
+        
+        # Determine unique global group IDs in this store
+        unique_groups = sorted(list(set(group_codes)))
+        group_to_local = {g: idx for idx, g in enumerate(unique_groups)}
+        local_codes = np.array([group_to_local[g] for g in group_codes])
+        
+        # Allocate store local tensor: (num_store_groups, max_day + 1, forecast_horizon)
+        store_soft_targets = torch.zeros((len(unique_groups), max_day + 1, forecast_horizon), dtype=torch.float32)
+        
+        # Vectorized assignment
+        local_codes_tensor = torch.tensor(local_codes, dtype=torch.long)
+        start_times_tensor = torch.tensor(start_times, dtype=torch.long)
+        store_soft_targets[local_codes_tensor, start_times_tensor] = part_preds.cpu()
+        
+        # Save soft targets store partition
+        output_file = os.path.join(output_dir, f"{args.exp_name}_{store}.pt")
+        print(f"Saving soft targets partition to: {output_file}")
+        torch.save({
+            "unique_groups": unique_groups,
+            "tensor": store_soft_targets
+        }, output_file)
+        
+        # Save a JSON provenance sidecar alongside each store partition
+        provenance = {
+            "exp_name": args.exp_name,
+            "store": store,
+            "checkpoint_path": str(checkpoint_path_abs),
+            "max_day": int(max_day),
+            "batch_size": int(args.batch_size),
+            "feature_version": int(FEATURE_VERSION),
+            "tensor_shape": list(store_soft_targets.shape),
+            "git_commit": get_git_commit_hash(),
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        provenance_path = output_file.replace(".pt", ".json")
+        print(f"Saving soft targets provenance to: {provenance_path}")
+        with open(provenance_path, "w") as _pf:
+            json.dump(provenance, _pf, indent=4)
+            
+        # Reclaim memory
         del part_loader
         del part_ds
+        del part_preds
+        del store_soft_targets
         gc.collect()
-        
-    # Aggregate predictions across stores
-    preds = torch.cat(all_preds, dim=0)
-    group_encoder = training_data._categorical_encoders['id']
-    group_codes = group_encoder.transform(all_group_names)
-    start_times = np.array(all_start_times)
-
-    # Check mapping alignment
-    assert len(preds) == len(group_codes) == len(start_times), "Mismatch in prediction shapes and index lengths."
-
-    # Allocate tensor: (num_groups, max_days, forecast_horizon)
-    num_groups = len(group_encoder.classes_)
-    max_days = cfg.dataset.splits.ood_test.end + 1
-    forecast_horizon = cfg.dataset.prediction_window
-    
-    soft_targets = torch.zeros((num_groups, max_days, forecast_horizon), dtype=torch.float32)
-
-    # Vectorized assignment
-    group_codes_tensor = torch.tensor(group_codes, dtype=torch.long)
-    start_times_tensor = torch.tensor(start_times, dtype=torch.long)
-    
-    soft_targets[group_codes_tensor, start_times_tensor] = preds.cpu()
-
-    # 8. Save soft targets tensor
-    print(f"Saving soft targets lookup tensor to: {output_file}")
-    torch.save(soft_targets, output_file)
-
-    # A-3: Save a JSON provenance sidecar alongside the .pt so that the tensor's
-    # origin (checkpoint, scope, feature version, generation parameters) is always
-    # traceable without inspecting tensor contents.
-    provenance = {
-        "exp_name": args.exp_name,
-        "checkpoint_path": str(checkpoint_path_abs),
-        "store_filter": cfg.environment.store_filter or "full",
-        "max_day": int(max_day),
-        "batch_size": int(args.batch_size),
-        "feature_version": int(FEATURE_VERSION),
-        "tensor_shape": list(soft_targets.shape),
-        "git_commit": get_git_commit_hash(),
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-    }
-    provenance_path = output_file.replace(".pt", ".json")
-    print(f"Saving soft targets provenance to: {provenance_path}")
-    with open(provenance_path, "w") as _pf:
-        json.dump(provenance, _pf, indent=4)
 
     print("Soft targets generation completed successfully!")
 

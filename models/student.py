@@ -94,15 +94,17 @@ class M5TransformerStudent(pl.LightningModule):
         preds = self(x)
         
         # y shape: (batch_size, prediction_window)
-        if self.alpha < 1.0 and self.soft_targets is not None:
-            # Distillation mode: extract group and time indices to get teacher forecasts
-            group_ids = x['groups'][:, 0].long()
-            start_times = x['decoder_time_idx'][:, 0].long()
-            
-            # Lookup teacher soft targets (move dynamically to device if needed)
-            if self.soft_targets.device != self.device:
-                self.soft_targets = self.soft_targets.to(self.device)
-            teacher_preds = self.soft_targets[group_ids, start_times]
+        teacher_preds = x.get('soft_targets', None)
+        if self.alpha < 1.0 and (self.soft_targets is not None or teacher_preds is not None):
+            if teacher_preds is None:
+                # Distillation mode: extract group and time indices to get teacher forecasts
+                group_ids = x['groups'][:, 0].long()
+                start_times = x['decoder_time_idx'][:, 0].long()
+                
+                # Lookup teacher soft targets (move dynamically to device if needed)
+                if self.soft_targets.device != self.device:
+                    self.soft_targets = self.soft_targets.to(self.device)
+                teacher_preds = self.soft_targets[group_ids, start_times]
             
             # Compute losses
             loss_sup = self.loss_fn(preds, y)
