@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import argparse
 import datetime
 import torch
@@ -138,6 +139,11 @@ def main():
         batches_processed = 0
         max_batches_per_store = getattr(cfg.environment, "max_batches_per_store", None)
         
+        num_items = len(unique_items)
+        num_chunks = int(np.ceil(num_items / chunk_size))
+        print(f"Store {store} | Total unique items: {num_items} | Configured chunk size: {chunk_size} | Total chunks: {num_chunks}")
+        
+        chunk_idx = 1
         for i in range(0, len(unique_items), chunk_size):
             chunk_items = unique_items[i : i + chunk_size]
             df_chunk = df_part_sliced[df_part_sliced['item_id'].isin(chunk_items)].copy()
@@ -145,6 +151,8 @@ def main():
                 continue
                 
             # Construct dataset for chunk
+            t0 = time.time()
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Building TimeSeriesDataSet...")
             chunk_ds = TimeSeriesDataSet.from_dataset(
                 training_data,
                 df_chunk,
@@ -152,14 +160,20 @@ def main():
                 stop_randomization=True
             )
             del df_chunk
+            t_dataset = time.time() - t0
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Building TimeSeriesDataSet completed in {t_dataset:.2f}s")
             
             # Create DataLoader for chunk
+            t0 = time.time()
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Building DataLoader...")
             chunk_loader = chunk_ds.to_dataloader(
                 train=False,
                 batch_size=args.batch_size,
                 shuffle=False,
                 num_workers=cfg.environment.num_workers
             )
+            t_loader = time.time() - t0
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Building DataLoader completed in {t_loader:.2f}s")
             
             num_batches = len(chunk_loader)
             if max_batches_per_store is not None:
@@ -175,6 +189,8 @@ def main():
                 limit_samples = None
             
             # Generate predictions for this chunk using native PyTorch forward pass
+            t0 = time.time()
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Running teacher inference...")
             chunk_preds_list = []
             with torch.no_grad():
                 for batch in chunk_loader:
@@ -184,7 +200,12 @@ def main():
                     pred_val = teacher.to_prediction(out)
                     chunk_preds_list.append(pred_val.cpu())
             chunk_preds = torch.cat(chunk_preds_list, dim=0)
-                
+            t_inference = time.time() - t0
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Running teacher inference completed in {t_inference:.2f}s")
+            
+            # Post-processing predictions
+            t0 = time.time()
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Post-processing predictions...")
             if limit_samples is not None:
                 chunk_preds = chunk_preds[:limit_samples]
                 chunk_decoded = chunk_ds.decoded_index.head(limit_samples)
@@ -197,12 +218,21 @@ def main():
             # Map codes and assign directly to the store-local tensor
             chunk_group_codes = group_encoder.transform(chunk_group_names)
             chunk_local_codes = np.array([group_to_local[g] for g in chunk_group_codes])
+            t_postprocess = time.time() - t0
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Post-processing predictions completed in {t_postprocess:.2f}s")
             
+            # Writing into lookup tensor
+            t0 = time.time()
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Writing into lookup tensor...")
             local_codes_tensor = torch.tensor(chunk_local_codes, dtype=torch.long)
             start_times_tensor = torch.tensor(chunk_start_times, dtype=torch.long)
             store_soft_targets[local_codes_tensor, start_times_tensor] = chunk_preds.cpu()
+            t_assign = time.time() - t0
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Writing into lookup tensor completed in {t_assign:.2f}s")
             
+            print(f"Store {store} | Chunk {chunk_idx}/{num_chunks} | Saving complete.")
             batches_processed += num_batches
+            chunk_idx += 1
             
             # Reclaim chunk memory immediately
             del chunk_ds
@@ -212,11 +242,14 @@ def main():
             
         # Save soft targets store partition
         output_file = os.path.join(output_dir, f"{args.exp_name}_{store}.pt")
+        t0 = time.time()
         print(f"Saving soft targets partition to: {output_file}")
         torch.save({
             "unique_groups": unique_groups,
             "tensor": store_soft_targets
         }, output_file)
+        t_save = time.time() - t0
+        print(f"Saving soft targets partition completed in {t_save:.2f}s")
         
         # Save a JSON provenance sidecar alongside each store partition
         provenance = {
