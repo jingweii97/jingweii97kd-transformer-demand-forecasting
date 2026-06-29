@@ -86,11 +86,22 @@ def main():
 
     # Determine KD flag and alpha
     kd_enabled = args.kd if args.kd is not None else cfg.student.kd
+    cfg.student.kd = kd_enabled
+    
     alpha = args.alpha if args.alpha is not None else cfg.student.alpha
+    cfg.student.alpha = alpha
+    
     epochs = args.epochs if args.epochs is not None else cfg.student.epochs
+    cfg.student.epochs = epochs
+    
     batch_size = args.batch_size if args.batch_size is not None else cfg.student.batch_size
+    cfg.student.batch_size = batch_size
+    
     limit_train_batches = args.limit_train_batches if args.limit_train_batches is not None else cfg.student.limit_train_batches
+    cfg.student.limit_train_batches = limit_train_batches
+    
     limit_val_batches = args.limit_val_batches if args.limit_val_batches is not None else cfg.student.limit_val_batches
+    cfg.student.limit_val_batches = limit_val_batches
 
     # 2. Load Preprocessed Data
     from utils.paths import get_dataset_dir
