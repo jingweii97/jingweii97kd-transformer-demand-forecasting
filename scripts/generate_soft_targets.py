@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.config import load_config, get_git_commit_hash
 from utils.paths import resolve_path
 from utils.seed import set_seed
-from data.cache import load_from_cache, load_dataset_from_cache, resolve_stores, FEATURE_VERSION
+from data.cache import load_from_cache, resolve_stores, FEATURE_VERSION, is_cache_valid
 from data.dataset import build_timeseries_dataset
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
@@ -51,22 +51,20 @@ def main():
     output_dir = os.path.join(artifacts_dir, "soft_targets")
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Load Preprocessed Data
+    # 1. Verify preprocessed dataset caches exist
     from utils.paths import get_dataset_dir
     ds_dir = get_dataset_dir(cfg)
-    df = load_dataset_from_cache(
-        artifacts_dir=ds_dir,
-        store_filter=cfg.environment.store_filter
-    )
-    if df is None:
-        raise FileNotFoundError(
-            f"Preprocessed cache not found for store filter: '{cfg.environment.store_filter}'. "
-            "Please run prepare_dataset.py first."
-        )
+    stores = resolve_stores(cfg.environment.store_filter)
+    for store in stores:
+        if not is_cache_valid(ds_dir, store):
+            raise FileNotFoundError(
+                f"Valid cache not found for store '{store}' under '{ds_dir}'. "
+                "Please run prepare_dataset.py first."
+            )
 
     # 2. Build Base Dataset (to inherit encoders and normalizers)
     print("Building base training dataset...")
-    training_data = build_timeseries_dataset(df, cfg, is_train=True)
+    training_data = build_timeseries_dataset(None, cfg, is_train=True)
 
     # 3. Load Frozen TFT Model
     checkpoint_path_abs = resolve_path(args.checkpoint_path)

@@ -11,7 +11,7 @@ from utils.config import load_config, save_config, save_metadata
 from utils.paths import resolve_path
 from utils.seed import set_seed
 from utils.logging import get_csv_logger
-from data.cache import load_dataset_from_cache
+from data.cache import resolve_stores, is_cache_valid
 from data.dataset import build_timeseries_dataset
 from models.teacher import create_tft_teacher
 import torch
@@ -82,22 +82,20 @@ def main():
     limit_train_batches = args.limit_train_batches if args.limit_train_batches is not None else cfg.teacher.limit_train_batches
     limit_val_batches = args.limit_val_batches if args.limit_val_batches is not None else cfg.teacher.limit_val_batches
 
-    # 2. Load cached Parquet dataset
+    # 2. Verify preprocessed dataset caches exist
     from utils.paths import get_dataset_dir
     ds_dir = get_dataset_dir(cfg)
-    df = load_dataset_from_cache(
-        artifacts_dir=ds_dir,
-        store_filter=cfg.environment.store_filter
-    )
-    if df is None:
-        raise FileNotFoundError(
-            f"Preprocessed cache not found for store filter: '{cfg.environment.store_filter}'. "
-            "Please run prepare_dataset.py first."
-        )
+    stores = resolve_stores(cfg.environment.store_filter)
+    for store in stores:
+        if not is_cache_valid(ds_dir, store):
+            raise FileNotFoundError(
+                f"Valid cache not found for store '{store}' under '{ds_dir}'. "
+                "Please run prepare_dataset.py first."
+            )
 
     # 3. Build Datasets
     print("Building TimeSeriesDataSet objects...")
-    training_data = build_timeseries_dataset(df, cfg, is_train=True)
+    training_data = build_timeseries_dataset(None, cfg, is_train=True)
     
     from data.dataset import StorePartitionManager
     partition_manager = StorePartitionManager(training_data, cfg)
