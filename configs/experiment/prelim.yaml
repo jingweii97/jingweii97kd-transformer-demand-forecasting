@@ -9,3 +9,8 @@ teacher:
 student:
   epochs: 2
   patience: 1
+  d_model: 24
+  nhead: 4
+  layers: 2
+  dim_feedforward: 48
+  alpha: 0.7
