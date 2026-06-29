@@ -5,7 +5,8 @@ import lightning.pytorch as pl
 class M5TransformerStudent(pl.LightningModule):
     def __init__(self, training_dataset, d_model=32, nhead=4, num_layers=2, dim_feedforward=64, 
                  dropout=0.1, lr=1e-3, alpha=1.0, lookback_window=90, prediction_window=28, 
-                 soft_targets=None):
+                 soft_targets=None, embedding_dim=8, output_head="flat_decoder_mlp", 
+                 output_head_hidden_dim=48):
         """
         training_dataset: TimeSeriesDataSet used for shape configurations and encoders
         d_model: Transformer hidden dimension size
@@ -18,6 +19,9 @@ class M5TransformerStudent(pl.LightningModule):
         lookback_window: L (number of lookback days)
         prediction_window: H (number of forecast days)
         soft_targets: Pre-computed teacher forecasts tensor of shape (num_groups, 1942, 28)
+        embedding_dim: Embedding dimension size for categoricals
+        output_head: Type of output projection head ('flat_decoder_mlp', 'flat_decoder', or 'step_wise')
+        output_head_hidden_dim: Hidden dimension size for the 'flat_decoder_mlp' head
         """
         super().__init__()
         self.save_hyperparameters(ignore=['training_dataset', 'soft_targets'])
@@ -34,15 +38,24 @@ class M5TransformerStudent(pl.LightningModule):
         self.embeddings = nn.ModuleList([
             nn.Embedding(
                 num_embeddings=len(training_dataset._categorical_encoders[col].classes_) + 1,
-                embedding_dim=8
+                embedding_dim=embedding_dim
             ) for col in self.cat_cols
         ])
         
-        self.total_cat_dim = len(self.cat_cols) * 8
+        self.total_cat_dim = len(self.cat_cols) * embedding_dim
         self.num_reals = len(training_dataset.reals)
         
-        # Project concatenated embeddings + reals to d_model
-        self.input_projector = nn.Linear(self.total_cat_dim + self.num_reals, d_model)
+        # Dynamically identify known continuous feature indices to avoid future leakage
+        self.known_real_indices = [
+            i for i, name in enumerate(training_dataset.reals)
+            if name not in training_dataset.time_varying_unknown_reals
+        ]
+        self.num_known_reals = len(self.known_real_indices)
+        
+        # Project concatenated embeddings + continuous variables to d_model
+        # Encoder uses all continuous features (reals); Decoder uses only future-known continuous features
+        self.encoder_projector = nn.Linear(self.total_cat_dim + self.num_reals, d_model)
+        self.decoder_projector = nn.Linear(self.total_cat_dim + self.num_known_reals, d_model)
         
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -54,9 +67,21 @@ class M5TransformerStudent(pl.LightningModule):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Direct linear projection head (flattens lookback of d_model to prediction window)
-        self.output_layer = nn.Linear(self.lookback_window * d_model, self.prediction_window)
-        
+        # Configure output prediction head type
+        self.output_head = output_head
+        if output_head == "flat_decoder_mlp":
+            self.output_layer = nn.Sequential(
+                nn.Linear(self.prediction_window * d_model, output_head_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(output_head_hidden_dim, self.prediction_window)
+            )
+        elif output_head == "flat_decoder":
+            self.output_layer = nn.Linear(self.prediction_window * d_model, self.prediction_window)
+        elif output_head == "step_wise":
+            self.output_layer = nn.Linear(d_model, 1)
+        else:
+            raise ValueError(f"Unknown output head type: {output_head}")
+            
         # Huber Loss (Smooth L1) for robustness
         self.loss_fn = nn.HuberLoss()
 
@@ -64,27 +89,45 @@ class M5TransformerStudent(pl.LightningModule):
         # x is batch[0] dict from PyTorch Forecasting dataloader
         batch_size = x['encoder_cat'].shape[0]
         
-        # Embed categoricals
-        embedded = []
+        # 1. Embed and project historical lookback inputs (encoder)
+        enc_embedded = []
         for i, embed_layer in enumerate(self.embeddings):
             cat_tensor = x['encoder_cat'][:, :, i].long()
             # Clamp class values to prevent out-of-bounds index errors
             cat_tensor = torch.clamp(cat_tensor, 0, embed_layer.num_embeddings - 1)
-            embedded.append(embed_layer(cat_tensor))
+            enc_embedded.append(embed_layer(cat_tensor))
+        enc_embedded_tensor = torch.cat(enc_embedded, dim=-1)
+        enc_full = torch.cat([enc_embedded_tensor, x['encoder_cont']], dim=-1)
+        enc_proj = self.encoder_projector(enc_full) # Shape: (batch_size, L, d_model)
+        
+        # 2. Embed and project future prediction window inputs (decoder)
+        dec_embedded = []
+        for i, embed_layer in enumerate(self.embeddings):
+            cat_tensor = x['decoder_cat'][:, :, i].long()
+            cat_tensor = torch.clamp(cat_tensor, 0, embed_layer.num_embeddings - 1)
+            dec_embedded.append(embed_layer(cat_tensor))
+        dec_embedded_tensor = torch.cat(dec_embedded, dim=-1)
+        
+        # Filter decoder continuous inputs to exclude unknown features (avoid future leakage)
+        dec_cont_known = x['decoder_cont'][:, :, self.known_real_indices]
+        dec_full = torch.cat([dec_embedded_tensor, dec_cont_known], dim=-1)
+        dec_proj = self.decoder_projector(dec_full) # Shape: (batch_size, H, d_model)
+        
+        # 3. Concatenate lookback and future windows along the time/sequence dimension
+        x_seq = torch.cat([enc_proj, dec_proj], dim=1) # Shape: (batch_size, L + H, d_model)
+        
+        # 4. Pass through Transformer encoder (full self-attention across lookback & future)
+        enc_out = self.transformer_encoder(x_seq) # Shape: (batch_size, L + H, d_model)
+        
+        # 5. Extract prediction window states and pass through the output prediction head
+        dec_out = enc_out[:, -self.prediction_window:, :] # Shape: (batch_size, H, d_model)
+        
+        if self.output_head in ("flat_decoder_mlp", "flat_decoder"):
+            dec_flat = dec_out.reshape(batch_size, -1)
+            preds = self.output_layer(dec_flat)
+        elif self.output_head == "step_wise":
+            preds = self.output_layer(dec_out).squeeze(-1) # Shape: (batch_size, H)
             
-        # Concatenate categoricals and continuous variables
-        embedded_tensor = torch.cat(embedded, dim=-1)
-        x_full = torch.cat([embedded_tensor, x['encoder_cont']], dim=-1)
-        
-        # Project to Transformer hidden dimension
-        x_proj = self.input_projector(x_full)
-        
-        # Pass through Transformer encoder
-        enc_out = self.transformer_encoder(x_proj)
-        
-        # Flatten time and feature dimensions, project directly to forecast horizon
-        enc_flat = enc_out.reshape(batch_size, -1)
-        preds = self.output_layer(enc_flat)
         return preds
 
     def training_step(self, batch, batch_idx):
